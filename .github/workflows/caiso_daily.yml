@@ -1,0 +1,88 @@
+name: TGE CAISO Daily Fetch
+
+# ════════════════════════════════════════════════
+# 매일 자동으로 CAISO 데이터를 가져와 commit
+# ════════════════════════════════════════════════
+
+on:
+  # 매일 PDT 11:00 + 14:00 (UTC 18:00 + 21:00)
+  schedule:
+    - cron: '0 18 * * *'   # 매일 11:00 PDT
+    - cron: '0 21 * * *'   # 매일 14:00 PDT (재시도)
+  
+  # 수동 실행 버튼 (Actions 탭에서)
+  workflow_dispatch:
+    inputs:
+      backfill_days:
+        description: '백필 일수 (0=오늘만, 14=지난 14일)'
+        required: false
+        default: '0'
+        type: string
+
+jobs:
+  fetch-caiso:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    
+    permissions:
+      contents: write   # data/ 폴더 commit 권한
+    
+    steps:
+      - name: 📥 Checkout
+        uses: actions/checkout@v4
+      
+      - name: 🐍 Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      - name: 📦 Install dependencies
+        run: |
+          pip install requests
+      
+      - name: 📡 Fetch CAISO Data
+        run: |
+          cd tge_caiso
+          if [ "${{ github.event.inputs.backfill_days }}" != "" ] && [ "${{ github.event.inputs.backfill_days }}" != "0" ]; then
+            echo "🔄 백필 모드: ${{ github.event.inputs.backfill_days }}일"
+            python3 caiso_fetcher.py --backfill ${{ github.event.inputs.backfill_days }}
+          else
+            echo "📅 일반 모드: 어제 데이터"
+            python3 caiso_fetcher.py
+          fi
+      
+      - name: 📊 Show results
+        run: |
+          cd tge_caiso/data
+          echo "=== 최신 파일 ==="
+          ls -la *.json 2>/dev/null | head -10
+          echo ""
+          echo "=== history 일수 ==="
+          if [ -f caiso_history.json ]; then
+            python3 -c "import json; print(len(json.load(open('caiso_history.json'))))"
+          fi
+      
+      - name: 💾 Commit changes
+        run: |
+          git config --local user.email "actions@github.com"
+          git config --local user.name "TGE CAISO Bot"
+          git add tge_caiso/data/
+          
+          if git diff --staged --quiet; then
+            echo "변경사항 없음 (이미 fetch된 날짜)"
+          else
+            git commit -m "🤖 CAISO data update $(date -u '+%Y-%m-%d %H:%M UTC')"
+            git push
+            echo "✅ Push 완료"
+          fi
+      
+      - name: 📈 Summary
+        if: always()
+        run: |
+          echo "## TGE CAISO Fetch Summary 📡" >> $GITHUB_STEP_SUMMARY
+          echo "- **실행 시각**: $(date -u)" >> $GITHUB_STEP_SUMMARY
+          echo "- **상태**: ${{ job.status }}" >> $GITHUB_STEP_SUMMARY
+          if [ -f tge_caiso/data/caiso_history.json ]; then
+            DAYS=$(python3 -c "import json; print(len(json.load(open('tge_caiso/data/caiso_history.json'))))")
+            echo "- **누적 일수**: $DAYS 일" >> $GITHUB_STEP_SUMMARY
+          fi
